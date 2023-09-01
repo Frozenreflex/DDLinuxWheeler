@@ -1,2 +1,4 @@
 # DDLinuxWheeler
-C# program to macro Wheel O' Fortuna in Dungeon Defenders on Linux
+C# program to macro Wheel O' Fortuna in Dungeon Defenders on Linux.
+
+Requires xdotool
