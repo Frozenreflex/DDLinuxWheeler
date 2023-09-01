@@ -111,6 +111,8 @@ public static class Program
         
         Console.WriteLine("Active window selected, have fun wheeling! Press any key in this window to close");
         Hook.KeyPressed += HookOnKeyPressed;
+        //todo: im not sure if the hook needs to be on another thread or the readkey, input supression doesn't work
+        //on linux yet so whenever it does check this
         var exitThread = new Thread(() =>
         {
             Console.ReadKey();
