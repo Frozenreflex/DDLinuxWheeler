@@ -19,6 +19,7 @@ public static class Program
     private static bool _busy;
     private static bool _debug;
     private static int _tries = 200;
+    private static int _wait = 500;
     
     //color values taken from existing wheeler script
     public static readonly ByteColor Potion = new(0x64, 0x00, 0x00);
@@ -73,9 +74,14 @@ public static class Program
         {
             var item = lowerArgs[i];
             if (i + 1 >= len) continue;
-            if (item == "--trytime" && float.TryParse(args[i+1], out var f))
+            switch (item)
             {
-                _tries = (int) f * 100;
+                case "--trytime" when float.TryParse(args[i+1], out var f):
+                    _tries = (int) f * 100;
+                    break;
+                case "-w" or "--wait" when float.TryParse(args[i+1], out var f2):
+                    _wait = (int) f2 * 1000;
+                    break;
             }
             foreach (var macro in AvailableMacros.Where(macro => item == "--" + macro.ArgName.ToLower()))
             {
@@ -90,7 +96,8 @@ public static class Program
             Console.WriteLine("  options:");
             Console.WriteLine("    -h, --help          Shows this");
             Console.WriteLine("    -d, --debug         Enables printing debug information");
-            Console.WriteLine("    --trytime <float>   Sets the amount of time, in seconds, that a roll can be attempted");
+            Console.WriteLine("    --trytime <float>   Sets the amount of time, in seconds, that a roll can be attempted, default 2 seconds");
+            Console.WriteLine("    -w, --wait <float>  Sets the amount of time, in seconds, to wait before the first roll is attempted, default 0.5 seconds");
             Console.WriteLine("  macros:");
             Console.WriteLine("    heal, upgrade, slowmotion, stun, killpercent, damagepercent, buffplayers, debuffenemies, goldenenemies, buffenemies, downgrade, norepair");
             Console.WriteLine("\nexample: DDLinuxWheeler --trytime 1.5 --heal 3 --buffplayers 4 --upgrade 5");
@@ -210,7 +217,7 @@ public static class Program
     {
         _window.GetGeometry(out var x, out var y, out var width, out var height);
         PressKey("3");
-        Thread.Sleep(500);
+        Thread.Sleep(_wait);
         
         //these values are computed for 1080p, so 1920 width, i dont know how the wheel scales with res, but the
         //other wheeler script's x values didn't work well
