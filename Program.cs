@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using Gdk;
 using Gtk;
@@ -15,38 +17,40 @@ public static class Program
     
     private static Window _window;
     //private static readonly EventSimulator Simulator = new();
-    private static readonly SimpleGlobalHook Hook = new();
+    private static SimpleGlobalHook _hook;
     private static bool _busy;
     private static bool _debug;
+    private static bool _pressWheel;
     private static int _tries = 200;
     private static int _wait = 500;
+    private static Stopwatch _watch = new();
     
     //color values taken from existing wheeler script
-    public static readonly ByteColor Potion = new(0x64, 0x00, 0x00);
-    public static readonly ByteColor Sword = new(0x5F, 0xAE, 0xCC);
-    public static readonly ByteColor Crystal = new(0x06, 0xE2, 0xFE);
-    public static readonly ByteColor Goblin = new(0x23, 0x26, 0x00);
+    private static readonly ByteColor Potion = new(0x64, 0x00, 0x00);
+    private static readonly ByteColor Sword = new(0x5F, 0xAE, 0xCC);
+    private static readonly ByteColor Crystal = new(0x06, 0xE2, 0xFE);
+    private static readonly ByteColor Goblin = new(0x23, 0x26, 0x00);
     
     //mana was missing from the existing wheeler script for some reason
-    public static readonly ByteColor Mana = new(0x22, 0x03, 0x64);
+    private static readonly ByteColor Mana = new(0x22, 0x03, 0x64);
 
     //beneficial effects
-    public static readonly WheelDefinition DebuffEnemies = new(Goblin, Goblin, Crystal);
-    public static readonly WheelDefinition BuffPlayers = new(Crystal, Crystal, Crystal);
-    public static readonly WheelDefinition DamagePercent = new(Sword, Sword, Sword);
-    public static readonly WheelDefinition KillPercent = new(Sword, Sword, Crystal);
-    public static readonly WheelDefinition Stun = new(Goblin, Goblin, Potion);
-    public static readonly WheelDefinition SlowMotion = new(Potion, Potion, Mana);
-    public static readonly WheelDefinition Upgrade = new(Mana, Mana, Mana);
-    public static readonly WheelDefinition Heal = new(Potion, Potion, Potion);
+    private static readonly WheelDefinition DebuffEnemies = new(Goblin, Goblin, Crystal);
+    private static readonly WheelDefinition BuffPlayers = new(Crystal, Crystal, Crystal);
+    private static readonly WheelDefinition DamagePercent = new(Sword, Sword, Sword);
+    private static readonly WheelDefinition KillPercent = new(Sword, Sword, Crystal);
+    private static readonly WheelDefinition Stun = new(Goblin, Goblin, Potion);
+    private static readonly WheelDefinition SlowMotion = new(Potion, Potion, Mana);
+    private static readonly WheelDefinition Upgrade = new(Mana, Mana, Mana);
+    private static readonly WheelDefinition Heal = new(Potion, Potion, Potion);
     
     //negative effects
-    public static readonly WheelDefinition GoldenEnemies = new(Goblin, Goblin, Goblin);
-    public static readonly WheelDefinition BuffEnemies = new(Goblin, Crystal, Crystal);
-    public static readonly WheelDefinition Downgrade = new(Goblin, Mana, Mana);
-    public static readonly WheelDefinition NoRepair = new(Sword, Mana, Mana);
+    private static readonly WheelDefinition GoldenEnemies = new(Goblin, Goblin, Goblin);
+    private static readonly WheelDefinition BuffEnemies = new(Goblin, Crystal, Crystal);
+    private static readonly WheelDefinition Downgrade = new(Goblin, Mana, Mana);
+    private static readonly WheelDefinition NoRepair = new(Sword, Mana, Mana);
 
-    public static readonly List<MacroDefinitionInformation> AvailableMacros = new()
+    private static readonly List<MacroDefinitionInformation> AvailableMacros = new()
     {
         new("debuffenemies", "Debuff Enemies", DebuffEnemies),
         new("buffplayers", "Buff Players", BuffPlayers),
@@ -62,13 +66,15 @@ public static class Program
         new("downgrade", "Downgrade", Downgrade),
         new("norepair", "No Repair", NoRepair),
     };
-    public static readonly Dictionary<KeyCode, MacroDefinitionInformation> ActiveMacros = new();
+
+    private static readonly Dictionary<KeyCode, MacroDefinitionInformation> ActiveMacros = new();
 
     private static void Main(string[] args)
     {
         //TODO: im not super happy with this
         var lowerArgs = args.Select(i => i.ToLower()).ToList();
         if (lowerArgs.Any(i => i is "-d" or "--debug")) _debug = true;
+        if (lowerArgs.Any(i => i is "--presswheel")) _pressWheel = true;
         var len = args.Length;
         for (var i = 0; i < len; i++)
         {
@@ -88,8 +94,31 @@ public static class Program
                 if (Enum.TryParse<KeyCode>("Vc" + args[i + 1], out var key)) ActiveMacros.Add(key, macro);
             }
         }
+        Application.Init();
         
-        
+        //this is hacky as fuck, but it seems to be the only way to mitigate the segfaulting exit code 139 garbage
+        for (var i = 0; i < len; i++)
+        {
+            var item = lowerArgs[i];
+            
+            if (item == "--watch")
+            {
+                RunHook();
+                return;
+            }
+            
+            if (i + 1 >= len) continue;
+
+            if (item == "--do")
+            {
+                if (AvailableMacros.FirstOrDefault(a => a.ArgName == lowerArgs[i + 1]) is { } macro)
+                {
+                    Wheel(macro.Definition, macro.PrintName);
+                    return;
+                }
+            }
+        }
+
         if (args.Any(i => i is "-h" or "--help") || ActiveMacros.Count == 0)
         {
             Console.WriteLine("usage: DDLinuxWheeler [options] <macro> <macrokey> ...");
@@ -107,47 +136,94 @@ public static class Program
             return;
         }
         
-        Application.Init();
-        Console.WriteLine("DDLinuxWheeler by Frozenreflex\nIn 10 seconds, the active window will be selected, be sure to have Dungeon Defenders as your active window!");
-        Thread.Sleep(10000);
         
-        //why is this obsoleted?
-#pragma warning disable CS0612
-        _window = Screen.Default.ActiveWindow;
-#pragma warning restore CS0612
+        Console.WriteLine("DDLinuxWheeler by Frozenreflex\nPress any key in this terminal to stop");
         
-        Console.WriteLine("Active window selected, have fun wheeling! Press any key in this window to close");
-        Hook.KeyPressed += HookOnKeyPressed;
-        //todo: im not sure if the hook needs to be on another thread or the readkey, input supression doesn't work
-        //on linux yet so whenever it does check this
-        var exitThread = new Thread(() =>
+        /*
+        _hook = new SimpleGlobalHook();
+        _hook.KeyPressed += HookOnKeyPressed;
+        _hook.RunAsync();
+        */
+        
+        var loop = new Thread(() =>
         {
-            Console.ReadKey();
-            Hook.Dispose();
-            Environment.Exit(0);
+            var exec = Assembly.GetExecutingAssembly().Location.Replace(".dll", "");
+            var argStr = string.Concat(lowerArgs.Select(i => i + " ")) + "--watch";
+            while (true)
+            {
+                var proc = new Process
+                {
+                    StartInfo =
+                    {
+                        FileName = exec,
+                        Arguments = argStr,
+                        UseShellExecute = false,
+                        RedirectStandardError = false,
+                        RedirectStandardInput = false,
+                        RedirectStandardOutput = false
+                    }
+                };
+                proc.Start();
+                Thread.Sleep(30000);
+                DebugLog("Refreshing hook");
+            }
         });
-        exitThread.Start();
-        Hook.Run();
+        loop.Start();
+        Console.ReadKey();
+        //_hook.Dispose();
+        Environment.Exit(0);
+    }
+
+    private static void RunHook()
+    {
+        var hook = new SimpleGlobalHook();
+        hook.KeyPressed += HookOnKeyPressed;
+        hook.RunAsync();
+        Thread.Sleep(30000);
+        hook.Dispose();
     }
 
     private static void HookOnKeyPressed(object sender, KeyboardHookEventArgs e)
     {
         if ((e.RawEvent.Mask & ModifierMask.Ctrl) <= 0 || !ActiveMacros.TryGetValue(e.Data.KeyCode, out var v)) return;
-        e.SuppressEvent = true;
-
+        //e.SuppressEvent = true;
         if (_busy) return;
-        var thread = new Thread(() =>
+        DebugLog("Starting process");
+        //ThreadPool.QueueUserWorkItem(_ => Wheel(v.Definition, v.PrintName));
+        
+        //hacky shit
+        var exec = Assembly.GetExecutingAssembly().Location.Replace(".dll", "");
+        var press = e.Data.KeyCode is KeyCode.Vc0 or KeyCode.Vc1 or KeyCode.Vc2 or KeyCode.Vc3 or KeyCode.Vc4
+            or KeyCode.Vc5 or KeyCode.Vc6 or KeyCode.Vc7 or KeyCode.Vc8 or KeyCode.Vc9
+            ? ""
+            : "--presswheel";
+        var proc = new Process
         {
-            Wheel(v.Definition, v.PrintName);
+            StartInfo =
+            {
+                FileName = exec,
+                Arguments =
+                    $"--trytime {(float) _tries / 100} -w {(float) _wait / 1000} --do {v.ArgName} {press}",
+                UseShellExecute = false,
+                RedirectStandardError = false,
+                RedirectStandardInput = false,
+                RedirectStandardOutput = false
+            }
+        };
+        proc.Start();
+        _busy = true;
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            Thread.Sleep(3000);
+            _busy = false;
         });
-        thread.Start();
     }
 
     private static void PressKey(string key)
     {
         //this is more reliable than eventsimulator, ?????
         DebugLog("Pressing key " + key);
-        var proc = new System.Diagnostics.Process
+        var proc = new Process
         {
             StartInfo =
             {
@@ -164,8 +240,8 @@ public static class Program
 
     private static IEnumerable<ByteColor> GetColors(int x, int y, int width, int height)
     {
-        var pixbuf = new Pixbuf(_window, x, y, width, height);
-        var data = pixbuf.ReadPixelBytes().Data;
+        var pixbuf = new Pixbuf(_window, x, y, width, height);;
+        var data = pixbuf.ReadPixelBytes().Data;;
         var count = data.Length / 3;
         var result = new List<ByteColor>(count);
         for (var i = 0; i < count; i++) result.Add(new ByteColor(data[3 * i], data[3 * i + 1], data[3 * i + 2]));
@@ -199,12 +275,7 @@ public static class Program
         if (_debug) Console.WriteLine(content);
     }
 
-    private static void Wheel(ByteColor one, ByteColor two, ByteColor three)
-    {
-        _busy = true;
-        Console.WriteLine(DoWheel(one, two, three) ? "Finished wheeling successfully" : "Took too long to wheel");
-        _busy = false;
-    }
+    private static void Wheel(ByteColor one, ByteColor two, ByteColor three) => Console.WriteLine(DoWheel(one, two, three) ? "Finished wheeling successfully" : "Took too long to wheel");
 
     private static void Wheel(WheelDefinition def) => Wheel(def.One, def.Two, def.Three);
 
@@ -215,10 +286,12 @@ public static class Program
     }
     private static bool DoWheel(ByteColor one, ByteColor two, ByteColor three)
     {
-        _window.GetGeometry(out var x, out var y, out var width, out var height);
-        PressKey("3");
+        //this is deprecated but it looks like the only way
+        _window ??= Screen.Default.ActiveWindow;
+        _window.GetGeometry(out _, out _, out var width, out var height);
+        if (_pressWheel) PressKey("3");
         Thread.Sleep(_wait);
-        
+
         //these values are computed for 1080p, so 1920 width, i dont know how the wheel scales with res, but the
         //other wheeler script's x values didn't work well
         const int aspect = 1920;
@@ -298,8 +371,8 @@ public struct WheelDefinition
 
 public class MacroDefinitionInformation
 {
-    public string ArgName; // name to use when setting the key using args
-    public string PrintName; //name to use when printing wheel info
+    public readonly string ArgName; // name to use when setting the key using args
+    public readonly string PrintName; //name to use when printing wheel info
     public WheelDefinition Definition;
 
     public MacroDefinitionInformation(string arg, string print, WheelDefinition def)
